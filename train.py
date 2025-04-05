@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import mean_squared_error, r2_score
 import time
+from tqdm import tqdm
 from dataset import get_dataloader  # Assuming dataset.py is in the same directory
 # Set random seed for reproducibility
 torch.manual_seed(42)
@@ -50,7 +51,8 @@ class CorrelationPredictor(nn.Module):
         return x.squeeze()
 
 # Training function
-def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device='cuda'):
+def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, patience=10, device='cuda'):
+    print("Start Training...")
     history = {
         'train_loss': [],
         'val_loss': [],
@@ -63,13 +65,24 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
     best_val_loss = float('inf')
     best_model_weights = None
     
-    for epoch in range(num_epochs):
+    # Early stopping parameters
+    counter = 0
+    early_stop = False
+    
+    # Create epoch progress bar
+    epoch_pbar = tqdm(range(num_epochs), desc="Epochs", position=0)
+    
+    for epoch in epoch_pbar:
         start_time = time.time()
         
         # Training phase
         model.train()
         running_loss = 0.0
-        for images, targets in train_loader:
+        
+        # Create training batch progress bar
+        train_pbar = tqdm(train_loader, desc="Training", leave=False, position=1)
+        
+        for images, targets in train_pbar:
             images, targets = images.to(device), targets.to(device)
             
             # Zero the parameter gradients
@@ -83,7 +96,11 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
             loss.backward()
             optimizer.step()
             
-            running_loss += loss.item() * images.size(0)
+            batch_loss = loss.item() * images.size(0)
+            running_loss += batch_loss
+            
+            # Update training progress bar
+            train_pbar.set_postfix({"batch_loss": f"{batch_loss / images.size(0):.4f}"})
         
         train_loss = running_loss / len(train_loader.dataset)
         history['train_loss'].append(train_loss)
@@ -94,19 +111,26 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         all_preds = []
         all_targets = []
         
+        # Create validation batch progress bar
+        val_pbar = tqdm(val_loader, desc="Validation", leave=False, position=1)
+        
         with torch.no_grad():
-            for images, targets in val_loader:
+            for images, targets in val_pbar:
                 images, targets = images.to(device), targets.to(device)
                 
                 # Forward pass
                 outputs = model(images)
                 loss = criterion(outputs, targets)
                 
-                running_loss += loss.item() * images.size(0)
+                batch_loss = loss.item() * images.size(0)
+                running_loss += batch_loss
                 
                 # Store predictions and targets for metrics
                 all_preds.extend(outputs.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())
+                
+                # Update validation progress bar
+                val_pbar.set_postfix({"batch_loss": f"{batch_loss / images.size(0):.4f}"})
         
         val_loss = running_loss / len(val_loader.dataset)
         history['val_loss'].append(val_loss)
@@ -119,14 +143,29 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_model_weights = model.state_dict().copy()
+            counter = 0  # Reset early stopping counter
+        else:
+            counter += 1  # Increment counter if validation loss doesn't improve
+            
+        # Check for early stopping
+        if counter >= patience:
+            print(f"Early stopping triggered after {epoch+1} epochs")
+            early_stop = True
         
         epoch_time = time.time() - start_time
         
-        print(f"Epoch {epoch+1}/{num_epochs}: "
-              f"Train Loss: {train_loss:.4f}, "
-              f"Val Loss: {val_loss:.4f}, "
-              f"Val R²: {r2:.4f}, "
-              f"Time: {epoch_time:.2f}s")
+        # Update epoch progress bar with summary info
+        epoch_pbar.set_postfix({
+            "train_loss": f"{train_loss:.4f}",
+            "val_loss": f"{val_loss:.4f}",
+            "val_R²": f"{r2:.4f}",
+            "time": f"{epoch_time:.2f}s",
+            "early_stop": f"{counter}/{patience}"
+        })
+        
+        # Break the loop if early stopping is triggered
+        if early_stop:
+            break
     
     # Load best model weights
     model.load_state_dict(best_model_weights)
@@ -139,8 +178,11 @@ def evaluate_model(model, test_loader, device='cuda'):
     all_preds = []
     all_targets = []
     
+    # Create test batch progress bar
+    test_pbar = tqdm(test_loader, desc="Testing")
+    
     with torch.no_grad():
-        for images, targets in test_loader:
+        for images, targets in test_pbar:
             images = images.to(device)
             outputs = model(images)
             all_preds.extend(outputs.cpu().numpy())
@@ -184,9 +226,11 @@ def run_pipeline(csv_file, image_dir, batch_size=32, num_epochs=15):
     print(f"Using device: {device}")
     
     # Create DataLoader
+    print("Loading dataset...")
     dataloader = get_dataloader(csv_file, image_dir, batch_size=batch_size)
     
     # Split dataset into train, validation, test
+    print("Splitting dataset...")
     dataset = dataloader.dataset
     train_size = int(0.7 * len(dataset))
     val_size = int(0.15 * len(dataset))
@@ -206,19 +250,21 @@ def run_pipeline(csv_file, image_dir, batch_size=32, num_epochs=15):
     print(f"Test samples: {len(test_dataset)}")
     
     # Initialize the model
+    print("Initializing model...")
     model = CorrelationPredictor(pretrained=True, freeze_backbone=False)
     
     # Define loss function and optimizer
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
-    # Train model
+    # Train model with early stopping
     trained_model, history = train_model(
         model, train_loader, val_loader, criterion, optimizer,
-        num_epochs=num_epochs, device=device
+        num_epochs=num_epochs, patience=7, device=device
     )
     
     # Plot training history
+    print("Plotting training history...")
     plt.figure(figsize=(12, 5))
     
     # Plot losses
@@ -245,6 +291,7 @@ def run_pipeline(csv_file, image_dir, batch_size=32, num_epochs=15):
     # plt.show()
     
     # Evaluate model
+    print("Evaluating model...")
     results = evaluate_model(trained_model, test_loader, device)
     
     # Save model
@@ -262,6 +309,6 @@ if __name__ == "__main__":
     model, results = run_pipeline(
         csv_file=csv_file, 
         image_dir=image_dir,
-        batch_size=32,
-        num_epochs=100
+        batch_size=128,
+        num_epochs=100  # Early stopping will likely trigger before reaching 100 epochs
     )
