@@ -29,7 +29,8 @@ class CorrelationPredictor(nn.Module):
             nn.Linear(256, 64),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(64, 1)  # Output a single value for correlation
+            nn.Linear(64, 1),
+            nn.Tanh() # Output a single value from [-1,1] for correlation
         )
     
     def forward(self, x):
