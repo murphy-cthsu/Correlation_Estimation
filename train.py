@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
-from torchvision import models
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import mean_squared_error, r2_score
@@ -11,45 +10,7 @@ from tqdm import tqdm
 from dataset import get_dataloader  # Assuming dataset.py is in the same directory
 # Set random seed for reproducibility
 torch.manual_seed(42)
-
-
-# Create a model class based on a pre-trained ResNet
-class CorrelationPredictor(nn.Module):
-    def __init__(self, pretrained=True, freeze_backbone=False):
-        """
-        Args:
-            pretrained (bool): If True, uses pre-trained weights
-            freeze_backbone (bool): If True, freezes the backbone layers
-        """
-        super(CorrelationPredictor, self).__init__()
-        
-        # Load pre-trained ResNet model (smaller ResNet18 for faster training)
-        self.backbone = models.resnet18(pretrained=pretrained)
-        
-        # Freeze backbone layers if specified
-        if freeze_backbone:
-            for param in self.backbone.parameters():
-                param.requires_grad = False
-        
-        # ResNet18's fc layer input features is 512
-        in_features = self.backbone.fc.in_features
-        
-        # Replace with a regression head
-        self.backbone.fc = nn.Sequential(
-            nn.Linear(in_features, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, 1)  # Output a single value for correlation
-        )
-    
-    def forward(self, x):
-        x = self.backbone(x)
-        # Squeeze to remove extra dimension and match target
-        return x.squeeze()
-
+from model import CorrelationPredictor  
 # Training function
 def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, patience=10, device='cuda'):
     print("Start Training...")
@@ -58,10 +19,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         'val_loss': [],
         'val_r2': []
     }
-    
-    # Move model to device
-    model.to(device)
-    
+    model.to(device)  # move model to device  
     best_val_loss = float('inf')
     best_model_weights = None
     
@@ -69,33 +27,23 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
     counter = 0
     early_stop = False
     
-    # Create epoch progress bar
-    epoch_pbar = tqdm(range(num_epochs), desc="Epochs", position=0)
+    # epoch progress bar
+    epoch_pbar = tqdm(range(num_epochs), desc="Epochs", position=0) 
     
     for epoch in epoch_pbar:
         start_time = time.time()
-        
-        # Training phase
+
         model.train()
         running_loss = 0.0
-        
-        # Create training batch progress bar
         train_pbar = tqdm(train_loader, desc="Training", leave=False, position=1)
         
         for images, targets in train_pbar:
             images, targets = images.to(device), targets.to(device)
-            
-            # Zero the parameter gradients
             optimizer.zero_grad()
-            
-            # Forward pass
             outputs = model(images)
             loss = criterion(outputs, targets)
-            
-            # Backward pass and optimize
             loss.backward()
             optimizer.step()
-            
             batch_loss = loss.item() * images.size(0)
             running_loss += batch_loss
             
@@ -104,32 +52,23 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         
         train_loss = running_loss / len(train_loader.dataset)
         history['train_loss'].append(train_loss)
-        
-        # Validation phase
+        #validation
         model.eval()
         running_loss = 0.0
         all_preds = []
         all_targets = []
-        
-        # Create validation batch progress bar
         val_pbar = tqdm(val_loader, desc="Validation", leave=False, position=1)
         
         with torch.no_grad():
             for images, targets in val_pbar:
                 images, targets = images.to(device), targets.to(device)
-                
-                # Forward pass
                 outputs = model(images)
                 loss = criterion(outputs, targets)
                 
                 batch_loss = loss.item() * images.size(0)
                 running_loss += batch_loss
-                
-                # Store predictions and targets for metrics
                 all_preds.extend(outputs.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())
-                
-                # Update validation progress bar
                 val_pbar.set_postfix({"batch_loss": f"{batch_loss / images.size(0):.4f}"})
         
         val_loss = running_loss / len(val_loader.dataset)
@@ -147,14 +86,12 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         else:
             counter += 1  # Increment counter if validation loss doesn't improve
             
-        # Check for early stopping
         if counter >= patience:
             print(f"Early stopping triggered after {epoch+1} epochs")
             early_stop = True
         
         epoch_time = time.time() - start_time
-        
-        # Update epoch progress bar with summary info
+
         epoch_pbar.set_postfix({
             "train_loss": f"{train_loss:.4f}",
             "val_loss": f"{val_loss:.4f}",
@@ -177,8 +114,6 @@ def evaluate_model(model, test_loader, device='cuda'):
     model.eval()
     all_preds = []
     all_targets = []
-    
-    # Create test batch progress bar
     test_pbar = tqdm(test_loader, desc="Testing")
     
     with torch.no_grad():
@@ -187,8 +122,6 @@ def evaluate_model(model, test_loader, device='cuda'):
             outputs = model(images)
             all_preds.extend(outputs.cpu().numpy())
             all_targets.extend(targets.numpy())
-    
-    # Calculate metrics
     mse = mean_squared_error(all_targets, all_preds)
     rmse = np.sqrt(mse)
     r2 = r2_score(all_targets, all_preds)
@@ -219,7 +152,7 @@ def evaluate_model(model, test_loader, device='cuda'):
         'targets': all_targets
     }
 
-# Main function to run the training and evaluation pipeline
+# Run Training + Evaluation
 def run_pipeline(csv_file, image_dir, batch_size=32, num_epochs=15):
     # Check for GPU
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -252,18 +185,13 @@ def run_pipeline(csv_file, image_dir, batch_size=32, num_epochs=15):
     # Initialize the model
     print("Initializing model...")
     model = CorrelationPredictor(pretrained=True, freeze_backbone=False)
-    
-    # Define loss function and optimizer
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    
-    # Train model with early stopping
     trained_model, history = train_model(
         model, train_loader, val_loader, criterion, optimizer,
         num_epochs=num_epochs, patience=7, device=device
     )
-    
-    # Plot training history
+
     print("Plotting training history...")
     plt.figure(figsize=(12, 5))
     
@@ -277,7 +205,6 @@ def run_pipeline(csv_file, image_dir, batch_size=32, num_epochs=15):
     plt.title('Training and Validation Loss')
     plt.grid(True)
     
-    # Plot R²
     plt.subplot(1, 2, 2)
     plt.plot(history['val_r2'], label='Validation R²')
     plt.xlabel('Epoch')
@@ -288,9 +215,7 @@ def run_pipeline(csv_file, image_dir, batch_size=32, num_epochs=15):
     
     plt.tight_layout()
     plt.savefig('training_history.png')
-    # plt.show()
-    
-    # Evaluate model
+
     print("Evaluating model...")
     results = evaluate_model(trained_model, test_loader, device)
     
