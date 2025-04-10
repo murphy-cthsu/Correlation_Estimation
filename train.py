@@ -398,6 +398,6 @@ if __name__ == "__main__":
     model, results = run_pipeline(
         csv_file=csv_file, 
         image_dir=image_dir,
-        batch_size=128,
+        batch_size=32,
         num_epochs=100  # Early stopping will likely trigger before reaching 100 epochs
     )
